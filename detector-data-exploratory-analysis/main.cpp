@@ -1,6 +1,7 @@
 #include <matio.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
+#include <matplot/matplot.h>
 
 #include <filesystem>
 #include <iostream>
@@ -9,8 +10,12 @@
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
+#include <numeric>
+#include <set>
+#include <cmath>
 
 namespace fs = std::filesystem;
+namespace plt = matplot;
 
 struct Exceedance {
     std::string filename;
@@ -298,6 +303,113 @@ void save_exceedances_to_csv(const std::vector<Exceedance>& exceedances, const s
     std::cout << "\nExceedances saved to " << filename << std::endl;
 }
 
+void plot_analysis_results(const std::vector<Exceedance>& exceedances, 
+                           const std::vector<double>& movement_scores,
+                           const std::vector<double>& vthr_values,
+                           const std::vector<int>& frame_numbers) {
+    
+    std::cout << "\n=== GENERATING PLOTS ===" << std::endl;
+    
+    std::vector<double> frame_double(frame_numbers.begin(), frame_numbers.end());
+    
+    plt::figure();
+    plt::title("Movement Scores vs VThr Threshold");
+    plt::xlabel("Frame Number");
+    plt::ylabel("Movement Score");
+    plt::hold(plt::on);
+    
+    plt::plot(frame_double, movement_scores, "b-")->line_width(1);
+    plt::plot(frame_double, vthr_values, "r--")->line_width(2);
+    
+    if (!exceedances.empty()) {
+        std::vector<double> exceed_frames;
+        std::vector<double> exceed_scores;
+        for (const auto& e : exceedances) {
+            exceed_frames.push_back(static_cast<double>(e.frame_index));
+            exceed_scores.push_back(e.movement_score);
+        }
+        auto scatter_plot = plt::scatter(exceed_frames, exceed_scores);
+        scatter_plot->marker_color("red");
+        scatter_plot->marker_style(plt::line_spec::marker_style::circle);
+        scatter_plot->marker_size(15);
+    }
+    
+    plt::legend({"Movement Score", "VThr", "Exceedances"});
+    plt::grid(plt::on);
+    plt::save("movement_analysis.png");
+    std::cout << "  Saved: movement_analysis.png" << std::endl;
+    
+    if (!exceedances.empty()) {
+        plt::figure();
+        plt::title("Exceedance Magnitudes");
+        plt::xlabel("Frame Number");
+        plt::ylabel("Difference (Movement - VThr)");
+        
+        std::vector<double> exceed_frames_idx;
+        std::vector<double> differences;
+        for (const auto& e : exceedances) {
+            exceed_frames_idx.push_back(static_cast<double>(e.frame_index));
+            differences.push_back(e.difference);
+        }
+        
+        plt::bar(exceed_frames_idx, differences);
+        plt::grid(plt::on);
+        plt::save("exceedance_magnitudes.png");
+        std::cout << "  Saved: exceedance_magnitudes.png" << std::endl;
+        
+        plt::figure();
+        plt::title("Cumulative Exceedances Over Time");
+        plt::xlabel("Frame Number");
+        plt::ylabel("Cumulative Count");
+        
+        std::vector<double> cumulative;
+        int count = 0;
+        size_t exceed_idx = 0;
+        for (int i = 0; i < frame_numbers.size(); ++i) {
+            while (exceed_idx < exceedances.size() && exceedances[exceed_idx].frame_index == i) {
+                count++;
+                exceed_idx++;
+            }
+            cumulative.push_back(static_cast<double>(count));
+        }
+        
+        plt::plot(frame_double, cumulative, "g-")->line_width(2);
+        plt::grid(plt::on);
+        plt::save("cumulative_exceedances.png");
+        std::cout << "  Saved: cumulative_exceedances.png" << std::endl;
+        
+        plt::figure();
+        plt::title("Movement Scores: Normal vs Exceedance");
+        plt::ylabel("Movement Score");
+        
+        std::vector<double> normal_scores;
+        std::vector<double> exceed_scores_only;
+        
+        std::set<int> exceed_set;
+        for (const auto& e : exceedances) {
+            exceed_set.insert(e.frame_index);
+        }
+        
+        for (int i = 0; i < movement_scores.size(); ++i) {
+            if (exceed_set.find(i) != exceed_set.end()) {
+                exceed_scores_only.push_back(movement_scores[i]);
+            } else {
+                normal_scores.push_back(movement_scores[i]);
+            }
+        }
+        
+        if (!normal_scores.empty() && !exceed_scores_only.empty()) {
+            std::vector<std::vector<double>> box_data = {normal_scores, exceed_scores_only};
+            auto bp = plt::boxplot(box_data);
+            plt::xticklabels({"Normal", "Exceedance"});
+            plt::grid(plt::on);
+            plt::save("movement_boxplot.png");
+            std::cout << "  Saved: movement_boxplot.png" << std::endl;
+        }
+    }
+    
+    std::cout << "All plots saved successfully!\n" << std::endl;
+}
 
 int main() {
     try {
@@ -314,6 +426,10 @@ int main() {
         std::cout << "Found " << files.size() << " .mat files\n";
         
         std::vector<Exceedance> exceedances;
+        std::vector<double> movement_scores;
+        std::vector<double> vthr_values;
+        std::vector<int> frame_numbers;
+        
         int total_frames = 0;
         
         cv::Mat prev_frame;
@@ -333,6 +449,10 @@ int main() {
             
             if (!first_frame) {
                 double movement_score = compute_movement(prev_frame, curr_frame);
+                
+                movement_scores.push_back(movement_score);
+                vthr_values.push_back(vthr);
+                frame_numbers.push_back(global_frame_counter);
                 
                 if (movement_score > vthr) {
                     Exceedance e;
@@ -358,7 +478,11 @@ int main() {
         
         print_exceedance_report(exceedances, total_frames);
         save_exceedances_to_csv(exceedances);
+        
+        plot_analysis_results(exceedances, movement_scores, vthr_values, frame_numbers);
 
+        std::cout << "\n=== CREATING VIDEO WITH OVERLAYS ===" << std::endl;
+        
         const auto first_image = read_rgb_image(files.front());
         const int height = static_cast<int>(first_image.red.size());
         const int width = static_cast<int>(first_image.red[0].size());

@@ -1,0 +1,13 @@
+# Build directories
+build/
+cmake-build-*/
+
+# Data folders
+detector_dataset/
+*.mat
+
+# Output files
+*.mp4
+*.csv
+*.png
+*.jpg
