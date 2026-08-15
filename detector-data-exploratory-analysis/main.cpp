@@ -132,6 +132,30 @@ double extract_vthr(const fs::path &file) {
     return vthr;
 }
 
+double extract_res_e(const fs::path &file) {
+    mat_t *mat = Mat_Open(file.string().c_str(), MAT_ACC_RDONLY);
+    if (!mat) return 0.0;
+
+    matvar_t *res = Mat_VarRead(mat, "Res");
+    if (!res || res->class_type != MAT_C_STRUCT) {
+        if (res) Mat_VarFree(res);
+        Mat_Close(mat);
+        return 0.0;
+    }
+
+    matvar_t *e_field = Mat_VarGetStructFieldByName(res, "E", 0);
+
+    double res_e = 0.0;
+    if (e_field && e_field->data &&
+        e_field->class_type == MAT_C_DOUBLE) {
+        res_e = *static_cast<double *>(e_field->data);
+    }
+
+    Mat_VarFree(res);
+    Mat_Close(mat);
+    return res_e;
+}
+
 std::string extract_filename_from_ini(const fs::path &file) {
     mat_t *mat = Mat_Open(file.string().c_str(), MAT_ACC_RDONLY);
     if (!mat) return "";
@@ -305,6 +329,7 @@ void save_exceedances_to_csv(const std::vector<Exceedance>& exceedances, const s
 
 void plot_analysis_results(const std::vector<Exceedance>& exceedances, 
                            const std::vector<double>& movement_scores,
+                           const std::vector<double>& res_e_scores,
                            const std::vector<double>& vthr_values,
                            const std::vector<int>& frame_numbers) {
     
@@ -338,6 +363,37 @@ void plot_analysis_results(const std::vector<Exceedance>& exceedances,
     plt::grid(plt::on);
     plt::save("movement_analysis.png");
     std::cout << "  Saved: movement_analysis.png" << std::endl;
+
+    plt::figure();
+    plt::title("Res.E vs VThr Threshold");
+    plt::xlabel("Frame Number");
+    plt::ylabel("Res.E");
+    plt::hold(plt::on);
+
+    plt::plot(frame_double, res_e_scores, "g-")->line_width(1);
+    plt::plot(frame_double, vthr_values, "r--")->line_width(2);
+
+    std::vector<double> res_e_exceed_frames;
+    std::vector<double> res_e_exceed_values;
+
+    for (size_t i = 0; i < res_e_scores.size(); ++i) {
+        if (res_e_scores[i] > vthr_values[i]) {
+            res_e_exceed_frames.push_back(frame_double[i]);
+            res_e_exceed_values.push_back(res_e_scores[i]);
+        }
+    }
+
+    if (!res_e_exceed_frames.empty()) {
+        auto scatter_plot = plt::scatter(res_e_exceed_frames, res_e_exceed_values);
+        scatter_plot->marker_color("red");
+        scatter_plot->marker_style(plt::line_spec::marker_style::circle);
+        scatter_plot->marker_size(15);
+    }
+
+    plt::legend({"Res.E", "VThr", "Res.E exceedance"});
+    plt::grid(plt::on);
+    plt::save("res_e_analysis.png");
+    std::cout << "  Saved: res_e_analysis.png" << std::endl;
     
     if (!exceedances.empty()) {
         plt::figure();
@@ -428,6 +484,7 @@ int main() {
         std::vector<Exceedance> exceedances;
         std::vector<double> movement_scores;
         std::vector<double> vthr_values;
+        std::vector<double> res_e_scores;
         std::vector<int> frame_numbers;
         
         int total_frames = 0;
@@ -440,6 +497,7 @@ int main() {
             std::cout << "\nProcessing: " << file.filename().string() << std::endl;
             
             double vthr = extract_vthr(file);
+            double res_e = extract_res_e(file);
             std::string video_filename = extract_filename_from_ini(file);
             std::cout << "  VThr = " << vthr << std::endl;
             std::cout << "  Video: " << video_filename << std::endl;
@@ -449,12 +507,16 @@ int main() {
             
             if (!first_frame) {
                 double movement_score = compute_movement(prev_frame, curr_frame);
+
+                bool movement_exceeded = (movement_score > vthr);
+                bool res_e_exceeded = (res_e > vthr);
                 
                 movement_scores.push_back(movement_score);
+                res_e_scores.push_back(res_e);
                 vthr_values.push_back(vthr);
                 frame_numbers.push_back(global_frame_counter);
                 
-                if (movement_score > vthr) {
+                if (movement_exceeded) {
                     Exceedance e;
                     e.filename = file.filename().string();
                     e.frame_index = global_frame_counter;
@@ -479,7 +541,7 @@ int main() {
         print_exceedance_report(exceedances, total_frames);
         save_exceedances_to_csv(exceedances);
         
-        plot_analysis_results(exceedances, movement_scores, vthr_values, frame_numbers);
+        plot_analysis_results(exceedances, movement_scores, res_e_scores, vthr_values, frame_numbers);
 
         std::cout << "\n=== CREATING VIDEO WITH OVERLAYS ===" << std::endl;
         
@@ -535,7 +597,7 @@ int main() {
         video.release();
         std::cout << "\nVideo saved as: detector_video_with_analysis.mp4" << std::endl;
 
-        inspect_ini(data_path + "/0132_20170414_2216-20170414_2230.mat");
+        inspect_ini(data_path + "/0338_20171009_2200-20171009_2230.mat");
 
     } catch (const std::exception &error) {
         std::cerr << "Error: " << error.what() << '\n';
